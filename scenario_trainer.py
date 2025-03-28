@@ -10,7 +10,7 @@ st.set_page_config(page_title="Classroom Scenario Trainer", layout="wide")
 conn = sqlite3.connect("scenarios.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# Create table
+# Create tables
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS scenarios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,9 +21,17 @@ cursor.execute("""
 """)
 conn.commit()
 
+# In-memory responses
+if "responses" not in st.session_state:
+    st.session_state.responses = {}
+
 def add_scenario(description, model_answer, category):
     cursor.execute("INSERT INTO scenarios (description, model_answer, category) VALUES (?, ?, ?)",
                    (description, model_answer, category))
+    conn.commit()
+
+def delete_scenario(scenario_id):
+    cursor.execute("DELETE FROM scenarios WHERE id = ?", (scenario_id,))
     conn.commit()
 
 def get_all_categories():
@@ -53,8 +61,9 @@ def get_feedback(model_answer, trainee_answer):
         feedback += "🔴 Consider revisiting how to respond to this scenario. Focus on understanding and next steps."
     return feedback
 
+# Sidebar - Add or delete scenarios
 with st.sidebar:
-    st.header("➕ Add a New Scenario")
+    st.header("🛠 Manage Scenarios")
     description = st.text_area("Scenario Description")
     model_answer = st.text_area("Model Answer")
     category = st.selectbox("Category", ["Behaviour", "Assessment", "Safeguarding", "SEND", "Pedagogy", "Other"])
@@ -65,9 +74,24 @@ with st.sidebar:
         else:
             st.warning("Please complete all fields.")
 
+    st.markdown("---")
+    st.subheader("🗑 Delete Scenario")
+    scenarios = get_scenarios()
+    if scenarios:
+        del_id = st.selectbox("Select a scenario to delete", [f"{sid}: {desc[:40]}" for sid, desc, _, _ in scenarios])
+        del_sid = int(del_id.split(":")[0])
+        if st.button("Delete Selected"):
+            delete_scenario(del_sid)
+            st.success(f"Scenario {del_sid} deleted.")
+
+# Main app interface for trainees
 st.title("👩‍🏫 Classroom Scenario Trainer")
-all_categories = get_all_categories()
-selected_category = st.selectbox("Filter by Category", ["All"] + all_categories)
+
+trainee_name = st.text_input("Enter your name (for response tracking)", key="trainee_name")
+if not trainee_name:
+    st.warning("Please enter your name to submit responses.")
+
+selected_category = st.selectbox("Filter by Category", ["All"] + get_all_categories())
 
 scenarios = get_scenarios(selected_category)
 if not scenarios:
@@ -76,11 +100,27 @@ else:
     for sid, desc, model_ans, cat in scenarios:
         with st.expander(f"{cat} - Scenario {sid}: {desc}"):
             response = st.text_area("✍️ Your response:", key=f"resp_{sid}")
-            if st.button("Submit", key=f"submit_{sid}"):
-                st.session_state[f"submitted_{sid}"] = response
+            if st.button("Submit", key=f"submit_{sid}") and trainee_name:
+                st.session_state.responses[(sid, trainee_name)] = response
+                st.success("Response saved.")
 
-            if f"submitted_{sid}" in st.session_state:
+            if (sid, trainee_name) in st.session_state.responses:
                 st.subheader("💬 Feedback")
-                feedback = get_feedback(model_ans, st.session_state[f"submitted_{sid}"])
+                feedback = get_feedback(model_ans, st.session_state.responses[(sid, trainee_name)])
                 st.markdown(feedback)
                 st.markdown(f"✅ **Model Answer**: {model_ans}")
+
+# Export responses
+if st.session_state.responses:
+    st.subheader("📦 View/Export Trainee Responses")
+    df = pd.DataFrame([
+        {
+            "Scenario ID": sid,
+            "Trainee": name,
+            "Response": response
+        }
+        for (sid, name), response in st.session_state.responses.items()
+    ])
+    st.dataframe(df)
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button("Download Responses as CSV", csv, "trainee_responses.csv", "text/csv")
